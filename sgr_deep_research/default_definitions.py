@@ -14,6 +14,16 @@ DEFAULT_TOOLKIT = [
     tools.CreateReportTool,
 ]
 
+INCIDENT_INVESTIGATION_TOOLKIT = [
+    tools.ClarificationTool,
+    tools.GeneratePlanTool,
+    tools.AdaptPlanTool,
+    tools.FinalAnswerTool,
+    tools.CreateReportTool,
+    tools.LokiQueryTool,
+    tools.VictoriaMetricsQueryTool,
+]
+
 
 def get_default_agents_definitions() -> dict[str, AgentDefinition]:
     """Get default agent definitions.
@@ -41,6 +51,12 @@ def get_default_agents_definitions() -> dict[str, AgentDefinition]:
             name="sgr_tool_calling_agent",
             base_class=ResearchSGRToolCallingAgent,
             tools=DEFAULT_TOOLKIT,
+            prompts=PromptsConfig(system_prompt_file=Path("sgr_agent_core/prompts/research_system_prompt.txt")),
+        ),
+        AgentDefinition(
+            name="incident_investigation_agent",
+            base_class=ResearchSGRToolCallingAgent,
+            tools=INCIDENT_INVESTIGATION_TOOLKIT,
             prompts=PromptsConfig(system_prompt_file=Path("sgr_agent_core/prompts/research_system_prompt.txt")),
         ),
     ]

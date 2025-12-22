@@ -6,7 +6,9 @@ from sgr_agent_core.tools.create_report_tool import CreateReportTool
 from sgr_agent_core.tools.extract_page_content_tool import ExtractPageContentTool
 from sgr_agent_core.tools.final_answer_tool import FinalAnswerTool
 from sgr_agent_core.tools.generate_plan_tool import GeneratePlanTool
+from sgr_agent_core.tools.loki_query_tool import LokiQueryTool
 from sgr_agent_core.tools.reasoning_tool import ReasoningTool
+from sgr_agent_core.tools.victoria_metrics_query_tool import VictoriaMetricsQueryTool
 from sgr_agent_core.tools.web_search_tool import WebSearchTool
 
 # Tool lists for backward compatibility
@@ -39,6 +41,8 @@ __all__ = [
     "CreateReportTool",
     "FinalAnswerTool",
     "ReasoningTool",
+    "LokiQueryTool",
+    "VictoriaMetricsQueryTool",
     # Tool lists
     "NextStepToolStub",
     "NextStepToolsBuilder",
