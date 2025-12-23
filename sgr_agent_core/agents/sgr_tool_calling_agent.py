@@ -1,7 +1,11 @@
+import json
+import logging
+import re
 from typing import Literal, Type
 
 from openai import AsyncOpenAI, pydantic_function_tool
 from openai.types.chat import ChatCompletionFunctionToolParam
+from pydantic import ValidationError
 
 from sgr_agent_core.agent_config import AgentConfig
 from sgr_agent_core.agents.sgr_agent import SGRAgent
@@ -15,6 +19,8 @@ from sgr_agent_core.tools import (
     ReasoningTool,
     WebSearchTool,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class SGRToolCallingAgent(SGRAgent):
@@ -42,6 +48,56 @@ class SGRToolCallingAgent(SGRAgent):
         )
         self.tool_choice: Literal["required"] = "required"
 
+    def _clean_json_string(self, json_str: str) -> str:
+        """
+        Clean JSON string by removing trailing characters after the last closing brace.
+        
+        Args:
+            json_str: Raw JSON string that may contain trailing characters
+            
+        Returns:
+            Cleaned JSON string
+        """
+        # Remove leading/trailing whitespace
+        json_str = json_str.strip()
+        
+        # Find the last closing brace or bracket
+        last_brace = json_str.rfind('}')
+        last_bracket = json_str.rfind(']')
+        last_pos = max(last_brace, last_bracket)
+        
+        if last_pos > 0:
+            # Extract JSON up to the last closing brace/bracket
+            cleaned = json_str[:last_pos + 1]
+            
+            # Try to parse to validate
+            try:
+                json.loads(cleaned)
+                return cleaned
+            except json.JSONDecodeError:
+                pass
+        
+        # If that didn't work, try to find JSON object boundaries
+        # Look for first { and last }
+        first_brace = json_str.find('{')
+        if first_brace >= 0 and last_brace > first_brace:
+            cleaned = json_str[first_brace:last_brace + 1]
+            try:
+                json.loads(cleaned)
+                return cleaned
+            except json.JSONDecodeError:
+                pass
+        
+        # Last resort: try to extract JSON using regex
+        # Match JSON object: { ... }
+        json_pattern = r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}'
+        match = re.search(json_pattern, json_str)
+        if match:
+            return match.group(0)
+        
+        # If all else fails, return original (will fail with better error message)
+        return json_str
+
     async def _reasoning_phase(self) -> ReasoningTool:
         async with self.openai_client.chat.completions.stream(
             messages=await self._prepare_context(),
@@ -52,9 +108,25 @@ class SGRToolCallingAgent(SGRAgent):
             async for event in stream:
                 if event.type == "chunk":
                     self.streaming_generator.add_chunk(event.chunk)
-            reasoning: ReasoningTool = (
-                (await stream.get_final_completion()).choices[0].message.tool_calls[0].function.parsed_arguments
-            )
+            
+            completion = await stream.get_final_completion()
+            try:
+                reasoning: ReasoningTool = (
+                    completion.choices[0].message.tool_calls[0].function.parsed_arguments
+                )
+            except (ValidationError, ValueError) as e:
+                # JSON parsing error - try to fix trailing characters
+                logger.warning(f"JSON parsing error in reasoning phase, attempting to fix: {e}")
+                try:
+                    tool_call = completion.choices[0].message.tool_calls[0]
+                    raw_arguments = tool_call.function.arguments
+                    cleaned_json = self._clean_json_string(raw_arguments)
+                    json_data = json.loads(cleaned_json)
+                    reasoning = ReasoningTool(**json_data)
+                    logger.info("Successfully fixed JSON parsing for reasoning")
+                except Exception as fix_error:
+                    logger.error(f"Failed to fix JSON parsing in reasoning: {fix_error}", exc_info=True)
+                    raise ValueError(f"Failed to parse reasoning arguments: {e}")
         self.conversation.append(
             {
                 "role": "assistant",
@@ -105,6 +177,36 @@ class SGRToolCallingAgent(SGRAgent):
                 answer=final_content,
                 status=AgentStatesEnum.COMPLETED,
             )
+        except (ValidationError, ValueError) as e:
+            # JSON parsing error - try to fix trailing characters
+            logger.warning(f"JSON parsing error, attempting to fix: {e}")
+            try:
+                tool_call = completion.choices[0].message.tool_calls[0]
+                function_name = tool_call.function.name
+                raw_arguments = tool_call.function.arguments
+                
+                # Find the tool class
+                tool_class = None
+                for tool_type in self.toolkit:
+                    if tool_type.tool_name == function_name:
+                        tool_class = tool_type
+                        break
+                
+                if not tool_class:
+                    raise ValueError(f"Tool class not found for {function_name}")
+                
+                # Try to extract valid JSON from raw_arguments
+                # Remove trailing characters after the last closing brace
+                cleaned_json = self._clean_json_string(raw_arguments)
+                
+                # Parse JSON and create tool instance
+                json_data = json.loads(cleaned_json)
+                tool = tool_class(**json_data)
+                logger.info(f"Successfully fixed JSON parsing for {function_name}")
+            except Exception as fix_error:
+                logger.error(f"Failed to fix JSON parsing: {fix_error}", exc_info=True)
+                raise ValueError(f"Failed to parse tool arguments for {function_name}: {e}")
+        
         if not isinstance(tool, BaseTool):
             raise ValueError("Selected tool is not a valid BaseTool instance")
         self.conversation.append(
